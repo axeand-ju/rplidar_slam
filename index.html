@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RPLidar C1 — SLAM Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:wght@400;500;700&display=swap');
+
+  :root {
+    --bg-primary: #0a0e17;
+    --bg-secondary: #111827;
+    --bg-panel: #151d2e;
+    --border: #1e2a42;
+    --text-primary: #e2e8f0;
+    --text-secondary: #8494a7;
+    --text-dim: #4a5568;
+    --accent-scan: #00e5ff;
+    --accent-map: #7c4dff;
+    --accent-trajectory: #ffab40;
+    --accent-pose: #ff5252;
+    --accent-success: #4caf50;
+    --accent-warning: #ff9800;
+    --accent-error: #f44336;
+    --glow-scan: rgba(0, 229, 255, 0.15);
+    --glow-map: rgba(124, 77, 255, 0.10);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* ── Layout ── */
+  .app {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    grid-template-rows: 56px 1fr;
+    height: 100vh;
+    gap: 1px;
+    background: var(--border);
+  }
+
+  /* ── Header ── */
+  .header {
+    grid-column: 1 / -1;
+    background: var(--bg-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .logo-icon {
+    width: 32px; height: 32px;
+    background: conic-gradient(from 0deg, var(--accent-scan), var(--accent-map), var(--accent-trajectory), var(--accent-scan));
+    border-radius: 50%;
+    animation: spin 8s linear infinite;
+    position: relative;
+  }
+  .logo-icon::after {
+    content: '';
+    position: absolute;
+    inset: 4px;
+    background: var(--bg-secondary);
+    border-radius: 50%;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .header h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+  }
+  .header h1 span { color: var(--text-secondary); font-weight: 300; }
+
+  .connection-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .connection-badge .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+  }
+  .connection-badge.connected { background: rgba(76,175,80,0.12); color: var(--accent-success); }
+  .connection-badge.connected .dot { background: var(--accent-success); box-shadow: 0 0 6px var(--accent-success); }
+  .connection-badge.disconnected { background: rgba(244,67,54,0.12); color: var(--accent-error); }
+  .connection-badge.disconnected .dot { background: var(--accent-error); }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    background: var(--bg-secondary);
+    padding: 20px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+  }
+
+  .panel {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+  }
+
+  .panel-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 4px 0;
+  }
+  .stat-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .stat-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .pose-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 22px;
+    font-weight: 600;
+    line-height: 1.1;
+    margin-top: 4px;
+  }
+  .pose-unit { font-size: 12px; color: var(--text-dim); font-weight: 400; }
+
+  .icp-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .icp-status.ok { background: rgba(76,175,80,0.12); color: var(--accent-success); }
+  .icp-status.warn { background: rgba(255,152,0,0.12); color: var(--accent-warning); }
+  .icp-status.fail { background: rgba(244,67,54,0.12); color: var(--accent-error); }
+
+  /* ── Legend ── */
+  .legend { display: flex; flex-direction: column; gap: 6px; }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .legend-swatch {
+    width: 14px; height: 3px;
+    border-radius: 2px;
+  }
+
+  /* ── Layer toggles ── */
+  .layer-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 5px 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    user-select: none;
+  }
+  .layer-toggle input { display: none; }
+  .toggle-track {
+    width: 30px; height: 16px;
+    border-radius: 8px;
+    background: var(--border);
+    position: relative;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .toggle-track::after {
+    content: '';
+    position: absolute;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    top: 2px; left: 2px;
+    transition: all 0.2s;
+  }
+  .layer-toggle input:checked + .toggle-track { background: var(--accent-scan); }
+  .layer-toggle input:checked + .toggle-track::after {
+    background: #fff;
+    left: 16px;
+  }
+
+  /* ── Canvas area ── */
+  .canvas-container {
+    background: var(--bg-primary);
+    position: relative;
+    overflow: hidden;
+  }
+
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  /* ── Grid label ── */
+  .canvas-info {
+    position: absolute;
+    bottom: 12px; right: 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    pointer-events: none;
+  }
+
+  /* ── No-data overlay ── */
+  .no-data-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(10, 14, 23, 0.85);
+    z-index: 10;
+    transition: opacity 0.5s;
+  }
+  .no-data-overlay.hidden { opacity: 0; pointer-events: none; }
+  .no-data-overlay .spinner {
+    width: 36px; height: 36px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent-scan);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  .no-data-overlay p {
+    font-size: 13px;
+    color: var(--text-secondary);
+  }
+  .no-data-overlay code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: var(--bg-panel);
+    padding: 8px 14px;
+    border-radius: 6px;
+    color: var(--accent-scan);
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <div class="logo-icon"></div>
+      <h1>RPLidar C1 <span>/ SLAM Demo</span></h1>
+    </div>
+    <div id="connBadge" class="connection-badge disconnected">
+      <span class="dot"></span>
+      <span id="connText">Connecting…</span>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+
+    <!-- Pose -->
+    <div class="panel">
+      <div class="panel-title">Robot Pose</div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; text-align:center;">
+        <div>
+          <div class="stat-label">X</div>
+          <div class="pose-value" id="poseX">0<span class="pose-unit"> mm</span></div>
+        </div>
+        <div>
+          <div class="stat-label">Y</div>
+          <div class="pose-value" id="poseY">0<span class="pose-unit"> mm</span></div>
+        </div>
+        <div>
+          <div class="stat-label">θ</div>
+          <div class="pose-value" id="poseTheta">0<span class="pose-unit">°</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ICP Status -->
+    <div class="panel">
+      <div class="panel-title">ICP Scan Matching</div>
+      <div class="stat-row">
+        <span class="stat-label">Status</span>
+        <span id="icpStatus" class="icp-status ok">● Idle</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Mean error</span>
+        <span class="stat-value" id="icpError">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Iterations</span>
+        <span class="stat-value" id="icpIter">—</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Time</span>
+        <span class="stat-value" id="icpTime">—</span>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="panel">
+      <div class="panel-title">Statistics</div>
+      <div class="stat-row">
+        <span class="stat-label">Scans processed</span>
+        <span class="stat-value" id="scanCount">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Map points</span>
+        <span class="stat-value" id="mapPoints">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Scan points</span>
+        <span class="stat-value" id="scanPoints">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">FPS</span>
+        <span class="stat-value" id="fps">0</span>
+      </div>
+    </div>
+
+    <!-- Layers -->
+    <div class="panel">
+      <div class="panel-title">Layers</div>
+      <label class="layer-toggle">
+        <input type="checkbox" id="layerScan" checked>
+        <span class="toggle-track"></span>
+        <span style="color:var(--accent-scan);">■</span> Live Scan
+      </label>
+      <label class="layer-toggle">
+        <input type="checkbox" id="layerMap" checked>
+        <span class="toggle-track"></span>
+        <span style="color:var(--accent-map);">■</span> Global Map
+      </label>
+      <label class="layer-toggle">
+        <input type="checkbox" id="layerTrajectory" checked>
+        <span class="toggle-track"></span>
+        <span style="color:var(--accent-trajectory);">■</span> Trajectory
+      </label>
+      <label class="layer-toggle">
+        <input type="checkbox" id="layerGrid" checked>
+        <span class="toggle-track"></span>
+        <span style="color:var(--text-dim);">■</span> Grid
+      </label>
+    </div>
+
+    <!-- Legend & controls -->
+    <div class="panel">
+      <div class="panel-title">Controls</div>
+      <div style="font-size: 11px; color: var(--text-secondary); line-height: 1.6;">
+        <b>Scroll</b> — Zoom in/out<br>
+        <b>Drag</b> — Pan the view<br>
+        <b>R</b> — Reset view<br>
+        <b>F</b> — Follow robot pose<br>
+        <b>C</b> — Clear map
+      </div>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div class="canvas-container" id="canvasContainer">
+    <canvas id="slamCanvas"></canvas>
+    <div class="canvas-info" id="canvasInfo">Grid: 1000 mm</div>
+    <div class="no-data-overlay" id="noDataOverlay">
+      <div class="spinner"></div>
+      <p>Waiting for lidar data…</p>
+      <code>python slam_server.py --port /dev/ttyUSB0</code>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ── Config ──
+  const WS_URL = `ws://${location.hostname || 'localhost'}:8765`;
+  const RECONNECT_DELAY = 2000;
+
+  // ── DOM refs ──
+  const canvas = document.getElementById('slamCanvas');
+  const ctx = canvas.getContext('2d');
+  const container = document.getElementById('canvasContainer');
+  const noDataOverlay = document.getElementById('noDataOverlay');
+
+  // ── State ──
+  let ws = null;
+  let latestData = null;
+  let hasReceivedData = false;
+  let followMode = true;
+
+  // View transform
+  let viewX = 0, viewY = 0;  // Centre of view in world coords
+  let scale = 0.08;           // pixels per mm
+
+  // Pan state
+  let isPanning = false;
+  let panStartX = 0, panStartY = 0;
+  let panStartViewX = 0, panStartViewY = 0;
+
+  // FPS tracking
+  let frameCount = 0;
+  let lastFpsTime = performance.now();
+  let currentFps = 0;
+
+  // ── Layer visibility ──
+  const layers = {
+    scan: () => document.getElementById('layerScan').checked,
+    map: () => document.getElementById('layerMap').checked,
+    trajectory: () => document.getElementById('layerTrajectory').checked,
+    grid: () => document.getElementById('layerGrid').checked,
+  };
+
+  // ── Resize ──
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = container.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ── World ↔ Screen transforms ──
+  function worldToScreen(wx, wy) {
+    const rect = container.getBoundingClientRect();
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    return [
+      cx + (wx - viewX) * scale,
+      cy - (wy - viewY) * scale,  // Y-up in world, Y-down on screen
+    ];
+  }
+
+  function screenToWorld(sx, sy) {
+    const rect = container.getBoundingClientRect();
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    return [
+      viewX + (sx - cx) / scale,
+      viewY - (sy - cy) / scale,
+    ];
+  }
+
+  // ── Drawing ──
+  function draw() {
+    const rect = container.getBoundingClientRect();
+    const W = rect.width;
+    const H = rect.height;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Grid
+    if (layers.grid()) drawGrid(W, H);
+
+    if (!latestData) {
+      requestAnimationFrame(draw);
+      return;
+    }
+
+    const data = latestData;
+
+    // Follow mode: centre on robot
+    if (followMode && data.pose) {
+      viewX = data.pose.x;
+      viewY = data.pose.y;
+    }
+
+    // Map points
+    if (layers.map() && data.map) {
+      drawPoints(data.map.x, data.map.y, 'rgba(124, 77, 255, 0.35)', 1.2);
+    }
+
+    // Live scan
+    if (layers.scan() && data.scan) {
+      drawPoints(data.scan.x, data.scan.y, '#00e5ff', 2);
+    }
+
+    // Trajectory
+    if (layers.trajectory() && data.trajectory && data.trajectory.length > 1) {
+      drawTrajectory(data.trajectory);
+    }
+
+    // Robot pose indicator
+    if (data.pose) {
+      drawRobot(data.pose);
+    }
+
+    // FPS
+    frameCount++;
+    const now = performance.now();
+    if (now - lastFpsTime > 1000) {
+      currentFps = Math.round(frameCount * 1000 / (now - lastFpsTime));
+      frameCount = 0;
+      lastFpsTime = now;
+      document.getElementById('fps').textContent = currentFps;
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  function drawGrid(W, H) {
+    // Adaptive grid spacing
+    const minPixelGap = 50;
+    const steps = [100, 200, 500, 1000, 2000, 5000, 10000];
+    let gridStep = steps.find(s => s * scale >= minPixelGap) || 10000;
+
+    document.getElementById('canvasInfo').textContent = `Grid: ${gridStep} mm`;
+
+    ctx.strokeStyle = 'rgba(30, 42, 66, 0.6)';
+    ctx.lineWidth = 0.5;
+
+    // Compute visible world bounds
+    const [wLeft, wTop] = screenToWorld(0, 0);
+    const [wRight, wBottom] = screenToWorld(W, H);
+    const xMin = Math.floor(Math.min(wLeft, wRight) / gridStep) * gridStep;
+    const xMax = Math.ceil(Math.max(wLeft, wRight) / gridStep) * gridStep;
+    const yMin = Math.floor(Math.min(wTop, wBottom) / gridStep) * gridStep;
+    const yMax = Math.ceil(Math.max(wTop, wBottom) / gridStep) * gridStep;
+
+    ctx.beginPath();
+    for (let x = xMin; x <= xMax; x += gridStep) {
+      const [sx] = worldToScreen(x, 0);
+      ctx.moveTo(sx, 0);
+      ctx.lineTo(sx, H);
+    }
+    for (let y = yMin; y <= yMax; y += gridStep) {
+      const [, sy] = worldToScreen(0, y);
+      ctx.moveTo(0, sy);
+      ctx.lineTo(W, sy);
+    }
+    ctx.stroke();
+
+    // Origin cross
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    const [ox, oy] = worldToScreen(0, 0);
+    ctx.beginPath();
+    ctx.moveTo(ox, 0); ctx.lineTo(ox, H);
+    ctx.moveTo(0, oy); ctx.lineTo(W, oy);
+    ctx.stroke();
+  }
+
+  function drawPoints(xArr, yArr, color, size) {
+    ctx.fillStyle = color;
+    const n = xArr.length;
+    for (let i = 0; i < n; i++) {
+      const [sx, sy] = worldToScreen(xArr[i], yArr[i]);
+      ctx.fillRect(sx - size / 2, sy - size / 2, size, size);
+    }
+  }
+
+  function drawTrajectory(traj) {
+    if (traj.length < 2) return;
+    ctx.strokeStyle = 'rgba(255, 171, 64, 0.7)';
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    const [sx0, sy0] = worldToScreen(traj[0].x, traj[0].y);
+    ctx.moveTo(sx0, sy0);
+    for (let i = 1; i < traj.length; i++) {
+      const [sx, sy] = worldToScreen(traj[i].x, traj[i].y);
+      ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+  }
+
+  function drawRobot(pose) {
+    const [sx, sy] = worldToScreen(pose.x, pose.y);
+    const theta = -pose.theta * Math.PI / 180;  // screen coords
+
+    // Glow
+    const gradient = ctx.createRadialGradient(sx, sy, 0, sx, sy, 20);
+    gradient.addColorStop(0, 'rgba(255, 82, 82, 0.4)');
+    gradient.addColorStop(1, 'rgba(255, 82, 82, 0)');
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 20, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Triangle pointing in heading direction
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(theta);
+    ctx.fillStyle = '#ff5252';
+    ctx.beginPath();
+    ctx.moveTo(12, 0);
+    ctx.lineTo(-6, -7);
+    ctx.lineTo(-6, 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // Centre dot
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(sx, sy, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ── Interaction ──
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const zoomFactor = e.deltaY > 0 ? 0.85 : 1.18;
+    scale *= zoomFactor;
+    scale = Math.max(0.002, Math.min(2, scale));
+    followMode = false;
+  }, { passive: false });
+
+  canvas.addEventListener('mousedown', (e) => {
+    isPanning = true;
+    panStartX = e.clientX;
+    panStartY = e.clientY;
+    panStartViewX = viewX;
+    panStartViewY = viewY;
+    canvas.style.cursor = 'grabbing';
+    followMode = false;
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!isPanning) return;
+    const dx = e.clientX - panStartX;
+    const dy = e.clientY - panStartY;
+    viewX = panStartViewX - dx / scale;
+    viewY = panStartViewY + dy / scale;
+  });
+
+  window.addEventListener('mouseup', () => {
+    isPanning = false;
+    canvas.style.cursor = 'default';
+  });
+
+  document.addEventListener('keydown', (e) => {
+    const key = e.key.toLowerCase();
+    if (key === 'r') {
+      viewX = 0; viewY = 0; scale = 0.08;
+      followMode = false;
+    } else if (key === 'f') {
+      followMode = !followMode;
+    } else if (key === 'c') {
+      if (latestData) {
+        latestData.map = { x: [], y: [] };
+        latestData.trajectory = [];
+      }
+    }
+  });
+
+  // ── WebSocket ──
+  function connect() {
+    const badge = document.getElementById('connBadge');
+    const text = document.getElementById('connText');
+
+    ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+      badge.className = 'connection-badge connected';
+      text.textContent = 'Connected';
+    };
+
+    ws.onclose = () => {
+      badge.className = 'connection-badge disconnected';
+      text.textContent = 'Reconnecting…';
+      setTimeout(connect, RECONNECT_DELAY);
+    };
+
+    ws.onerror = () => {
+      ws.close();
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'slam_update') {
+        latestData = data;
+
+        if (!hasReceivedData) {
+          hasReceivedData = true;
+          noDataOverlay.classList.add('hidden');
+        }
+
+        // Update sidebar
+        updateSidebar(data);
+      }
+    };
+  }
+
+  function updateSidebar(d) {
+    document.getElementById('poseX').innerHTML =
+      `${Math.round(d.pose.x)}<span class="pose-unit"> mm</span>`;
+    document.getElementById('poseY').innerHTML =
+      `${Math.round(d.pose.y)}<span class="pose-unit"> mm</span>`;
+    document.getElementById('poseTheta').innerHTML =
+      `${d.pose.theta.toFixed(1)}<span class="pose-unit">°</span>`;
+
+    // ICP
+    const icp = d.icp;
+    const statusEl = document.getElementById('icpStatus');
+    if (icp.converged) {
+      statusEl.className = 'icp-status ok';
+      statusEl.textContent = '● Converged';
+    } else if (icp.mean_error < 200) {
+      statusEl.className = 'icp-status warn';
+      statusEl.textContent = '● Warning';
+    } else {
+      statusEl.className = 'icp-status fail';
+      statusEl.textContent = '● Failed';
+    }
+    document.getElementById('icpError').textContent = icp.mean_error.toFixed(1) + ' mm';
+    document.getElementById('icpIter').textContent = icp.iterations;
+    document.getElementById('icpTime').textContent = icp.time_ms.toFixed(1) + ' ms';
+
+    // Stats
+    document.getElementById('scanCount').textContent = d.scan_count;
+    document.getElementById('mapPoints').textContent =
+      d.map ? d.map.x.length.toLocaleString() : '0';
+    document.getElementById('scanPoints').textContent =
+      d.scan ? d.scan.x.length.toLocaleString() : '0';
+  }
+
+  // ── Init ──
+  connect();
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>
