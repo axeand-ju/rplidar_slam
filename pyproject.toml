@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Live SLAM demo for the RPLidar C1 with browser dashboard"
 requires-python = ">=3.10"
 dependencies = [
-    "rplidar-roboticia",
+    "rplidarc1",
     "websockets>=12.0",
     "numpy",
     "scipy",

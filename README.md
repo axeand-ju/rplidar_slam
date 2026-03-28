@@ -7,7 +7,7 @@ the sensor around the room.
 ## Architecture
 
 ```
-RPLidar C1 (USB) ─► Python backend (rplidar + ICP SLAM) ─► WebSocket ─► Browser dashboard
+RPLidar C1 (USB) ─► Python backend (rplidarc1 + ICP SLAM) ─► WebSocket ─► Browser dashboard
 ```
 
 - **Backend** (`slam_server.py`): Reads scans from the lidar, runs ICP scan matching
@@ -21,7 +21,7 @@ RPLidar C1 (USB) ─► Python backend (rplidar + ICP SLAM) ─► WebSocket ─
 - Python ≥ 3.10
 - [uv](https://docs.astral.sh/uv/) (recommended) — or pip
 
-Dependencies (`rplidar-roboticia`, `websockets`, `numpy`, `scipy`) are declared
+Dependencies (`rplidarc1`, `websockets`, `numpy`, `scipy`) are declared
 in `pyproject.toml` and in the PEP 723 inline metadata inside `slam_server.py`,
 so `uv` handles everything automatically.
 
@@ -55,7 +55,7 @@ uv run slam_server.py --simulate
 Or without uv:
 
 ```bash
-pip install rplidar-roboticia websockets numpy scipy
+pip install rplidarc1 websockets numpy scipy
 python slam_server.py --simulate
 ```
 

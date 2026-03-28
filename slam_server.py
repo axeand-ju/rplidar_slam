@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#     "rplidar-roboticia",
+#     "rplidarc1",
 #     "websockets>=12.0",
 #     "numpy",
 #     "scipy",
@@ -23,6 +23,7 @@ Usage:
 
 import argparse
 import asyncio
+import itertools
 import json
 import logging
 import math
@@ -36,18 +37,23 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 # ---------------------------------------------------------------------------
-# Try to import the rplidar driver.  We also provide a --simulate flag that
-# generates fake scans so you can test the dashboard without hardware.
+# RPLidar C1 driver — uses the rplidarc1 package which properly handles
+# the C1's DTOF protocol (the older rplidar-roboticia fails with
+# "Descriptor length mismatch" on C1 units).
 # ---------------------------------------------------------------------------
 try:
-    from rplidar import RPLidar
+    from rplidarc1 import RPLidar as RPLidarC1
     HAS_RPLIDAR = True
 except ImportError:
     HAS_RPLIDAR = False
 
 try:
     import websockets
-    from websockets.server import serve as ws_serve
+    # websockets >= 14 moved serve; fall back for older versions
+    try:
+        from websockets.asyncio.server import serve as ws_serve
+    except ImportError:
+        from websockets.server import serve as ws_serve
 except ImportError:
     print("ERROR: 'websockets' package not found.  Install with:\n"
           "  pip install websockets")
@@ -415,82 +421,112 @@ async def broadcast(message: str):
 #  Main Loop
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def slam_loop(lidar, state: SLAMState):
-    """Read scans from the lidar and run SLAM in a background thread."""
-    loop = asyncio.get_event_loop()
-
-    def scan_generator():
-        for scan in lidar.iter_scans():
-            yield scan
-
-    for scan in await loop.run_in_executor(None, lambda: next(iter([list(lidar.iter_scans())]))):
-        pass  # This won't work well — let's use a different pattern
-
-    # We'll run the blocking lidar loop in a thread and push results via a queue
-    pass
-
-
 async def main(args):
     state = SLAMState(max_map_points=args.max_map_pts)
-
-    # --- Set up lidar ---
-    if args.simulate:
-        log.info("Running in SIMULATION mode (no hardware)")
-        lidar = SimulatedLidar()
-    else:
-        if not HAS_RPLIDAR:
-            log.error("rplidar package not installed. Install with:\n"
-                      "  pip install rplidar-roboticia\n"
-                      "Or use --simulate for testing without hardware.")
-            sys.exit(1)
-        log.info("Connecting to RPLidar on %s @ %d baud", args.port, args.baudrate)
-        lidar = RPLidar(args.port, baudrate=args.baudrate)
-        info = lidar.get_info()
-        health = lidar.get_health()
-        log.info("Lidar info: %s", info)
-        log.info("Lidar health: %s", health)
 
     # --- WebSocket server ---
     log.info("Starting WebSocket server on %s:%d", args.ws_host, args.ws_port)
     server = await ws_serve(ws_handler, args.ws_host, args.ws_port)
 
-    # Also serve the HTML file via a simple HTTP server on ws_port + 1
-    http_port = args.ws_port + 1
-    log.info("Serving dashboard at http://localhost:%d", http_port)
+    # --- Set up lidar ---
+    lidar = None
+    if args.simulate:
+        log.info("Running in SIMULATION mode (no hardware)")
+    else:
+        if not HAS_RPLIDAR:
+            log.error("rplidarc1 package not installed. Install with:\n"
+                      "  pip install rplidarc1\n"
+                      "Or use --simulate for testing without hardware.")
+            sys.exit(1)
+        log.info("Connecting to RPLidar C1 on %s @ %d baud",
+                 args.port, args.baudrate)
+        lidar = RPLidarC1(args.port, args.baudrate)
 
-    # --- Scan processing loop (in executor to not block asyncio) ---
-    queue: asyncio.Queue = asyncio.Queue(maxsize=5)
+    # --- Scan queue: both real and simulated lidars push here ---
+    scan_queue: asyncio.Queue = asyncio.Queue(maxsize=5)
 
-    def lidar_reader():
-        """Blocking reader that pushes scans into the async queue."""
-        try:
-            for raw_scan in lidar.iter_scans():
-                # Convert polar to Cartesian
-                points = []
-                for quality, angle_deg, distance_mm in raw_scan:
-                    if quality > 0 and distance_mm > 50:
-                        rad = math.radians(angle_deg)
-                        x = distance_mm * math.cos(rad)
-                        y = distance_mm * math.sin(rad)
-                        points.append((x, y))
-                if len(points) > 20:
-                    arr = np.array(points)
-                    try:
-                        queue.put_nowait(arr)
-                    except asyncio.QueueFull:
-                        pass  # Drop frame if consumer is behind
-        except Exception as e:
-            log.error("Lidar reader error: %s", e)
+    async def c1_scan_collector(lidar_obj: RPLidarC1):
+        """
+        Collect scans from rplidarc1's async output_queue and accumulate
+        individual measurements into complete 360° scans, then push the
+        finished scan into our processing queue.
+        """
+        current_scan: list[tuple[float, float]] = []
+        prev_angle = -1.0
 
-    loop = asyncio.get_event_loop()
-    reader_task = loop.run_in_executor(None, lidar_reader)
+        while not lidar_obj.stop_event.is_set():
+            try:
+                data = await asyncio.wait_for(
+                    lidar_obj.output_queue.get(), timeout=1.0
+                )
+            except asyncio.TimeoutError:
+                continue
+
+            angle_deg = data["a_deg"]
+            distance_mm = data["d_mm"]
+            quality = data["q"]
+
+            # Detect new scan: angle wraps back around (large decrease)
+            if prev_angle > 300 and angle_deg < 60 and len(current_scan) > 20:
+                arr = np.array(current_scan)
+                try:
+                    scan_queue.put_nowait(arr)
+                except asyncio.QueueFull:
+                    pass  # Drop if consumer is behind
+                current_scan = []
+
+            prev_angle = angle_deg
+
+            # Filter low-quality and too-close points
+            if quality > 0 and distance_mm > 50:
+                rad = math.radians(angle_deg)
+                x = distance_mm * math.cos(rad)
+                y = distance_mm * math.sin(rad)
+                current_scan.append((x, y))
+
+    async def simulated_scan_producer():
+        """Push simulated scans into the queue."""
+        sim = SimulatedLidar()
+        loop = asyncio.get_event_loop()
+        for raw_scan in await loop.run_in_executor(None,
+                lambda: list(itertools.islice(sim.iter_scans(), 1))):
+            pass  # prime the generator
+
+        def _generate():
+            for scan in sim.iter_scans():
+                yield scan
+
+        gen = _generate()
+        while True:
+            raw_scan = await loop.run_in_executor(None, lambda: next(gen))
+            points = []
+            for quality, angle_deg, distance_mm in raw_scan:
+                if quality > 0 and distance_mm > 50:
+                    rad = math.radians(angle_deg)
+                    x = distance_mm * math.cos(rad)
+                    y = distance_mm * math.sin(rad)
+                    points.append((x, y))
+            if len(points) > 20:
+                try:
+                    scan_queue.put_nowait(np.array(points))
+                except asyncio.QueueFull:
+                    pass
+
+    # --- Start scan source ---
+    if args.simulate:
+        scan_task = asyncio.create_task(simulated_scan_producer())
+    else:
+        # Start rplidarc1 scan + our collector concurrently
+        scan_task = asyncio.create_task(
+            _run_c1_scan(lidar, c1_scan_collector)
+        )
 
     log.info("SLAM loop running — open the dashboard to see live data")
 
     try:
         while True:
             try:
-                scan_xy = await asyncio.wait_for(queue.get(), timeout=2.0)
+                scan_xy = await asyncio.wait_for(scan_queue.get(), timeout=2.0)
             except asyncio.TimeoutError:
                 continue
 
@@ -517,13 +553,22 @@ async def main(args):
         pass
     finally:
         log.info("Shutting down…")
-        try:
-            lidar.stop()
-            lidar.disconnect()
-        except Exception:
-            pass
+        scan_task.cancel()
+        if lidar is not None:
+            try:
+                lidar.stop_event.set()
+                lidar.reset()
+            except Exception:
+                pass
         server.close()
         await server.wait_closed()
+
+
+async def _run_c1_scan(lidar: "RPLidarC1", collector_fn):
+    """Run rplidarc1's scan and our collector as concurrent tasks."""
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(lidar.simple_scan(make_return_dict=True))
+        tg.create_task(collector_fn(lidar))
 
 
 def _default_serial_port() -> str:
