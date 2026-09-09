@@ -479,7 +479,7 @@ async def main(args):
 
             # Filter low-quality and too-close points
             if quality > 0 and distance_mm > 50:
-                rad = math.radians(angle_deg)
+                rad = math.radians(-angle_deg)
                 x = distance_mm * math.cos(rad)
                 y = distance_mm * math.sin(rad)
                 current_scan.append((x, y))
@@ -574,7 +574,7 @@ async def _run_c1_scan(lidar: "RPLidarC1", collector_fn):
 def _default_serial_port() -> str:
     """Pick a sensible default serial port for the current OS."""
     if sys.platform == "win32":
-        return "COM3"
+        return "COM7"
     elif sys.platform == "darwin":
         return "/dev/tty.usbserial-0001"
     return "/dev/ttyUSB0"
